@@ -42,66 +42,60 @@ class EquipmentBot:
         self.sheet = None
         self.setup_google_sheets()
         
-   def setup_google_sheets(self):
-    """Упрощенное подключение к Google Sheets с правильными scopes"""
-    try:
-        logger.info("🔄 Попытка подключения к Google Sheets...")
-        
-        creds_json = os.getenv('GOOGLE_CREDENTIALS')
-        
-        if not creds_json:
-            logger.error("❌ GOOGLE_CREDENTIALS не найдены!")
-            return
-            
-        logger.info("✅ Переменные окружения найдены")
-        
-        # Импортируем библиотеки
-        import gspread
-        from google.oauth2.service_account import Credentials
-        import json
-        
-        # Загружаем credentials
-        creds_dict = json.loads(creds_json)
-        
-        # 🔥 ПРАВИЛЬНЫЕ SCOPES - только для Sheets!
-        scope = [
-            'https://spreadsheets.google.com/feeds',
-            'https://www.googleapis.com/auth/drive.file'  # Только для файлов созданных через API
-        ]
-        
-        # Создаем credentials
-        creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
-        client = gspread.authorize(creds)
-        
-        # 🔥 ПРОБУЕМ ОТКРЫТЬ ТАБЛИЦУ РАЗНЫМИ СПОСОБАМИ
+    def setup_google_sheets(self):
+        """Упрощенное подключение к Google Sheets с правильными scopes"""
         try:
-            # Способ 1: По названию
-            self.sheet = client.open("Заявки на оборудование").sheet1
-            logger.info("🎉 УСПЕХ: Таблица найдена по названию!")
+            logger.info("🔄 Попытка подключения к Google Sheets...")
             
-        except gspread.SpreadsheetNotFound:
-            logger.error("❌ Таблица 'Заявки на оборудование' не найдена!")
+            creds_json = os.getenv('GOOGLE_CREDENTIALS')
             
-            # Способ 2: По URL (если есть)
-            # sheet_url = "https://docs.google.com/spreadsheets/d/ТВОЙ_ID_ТАБЛИЦЫ/edit"
-            # self.sheet = client.open_by_url(sheet_url).sheet1
-            
-        except Exception as e:
-            logger.error(f"❌ Ошибка при открытии таблицы: {e}")
-            
-        # Проверяем подключение
-        if self.sheet:
-            try:
-                # Пробуем прочитать первую ячейку
-                test_value = self.sheet.acell('A1').value
-                logger.info(f"✅ Тест подключения успешен! A1 = '{test_value}'")
-            except Exception as e:
-                logger.error(f"❌ Ошибка при тесте таблицы: {e}")
-                self.sheet = None
+            if not creds_json:
+                logger.error("❌ GOOGLE_CREDENTIALS не найдены!")
+                return
                 
-    except Exception as e:
-        logger.error(f"💥 ОШИБКА подключения: {str(e)}")
-        self.sheet = None
+            logger.info("✅ Переменные окружения найдены")
+            
+            # Импортируем библиотеки
+            import gspread
+            from google.oauth2.service_account import Credentials
+            import json
+            
+            # Загружаем credentials
+            creds_dict = json.loads(creds_json)
+            
+            # 🔥 ПРАВИЛЬНЫЕ SCOPES - только для Sheets!
+            scope = [
+                'https://spreadsheets.google.com/feeds',
+                'https://www.googleapis.com/auth/drive.file'
+            ]
+            
+            # Создаем credentials
+            creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
+            client = gspread.authorize(creds)
+            
+            # 🔥 ПРОБУЕМ ОТКРЫТЬ ТАБЛИЦУ ПО ID
+            try:
+                # ВСТАВЬ СЮДА СВОЙ ID ТАБЛИЦЫ!
+                sheet_id = "1IhI_3WR2y8iBLQa9X_-0Vjn0RGnuTVpghNSurkmnlRk"  # ← ЗАМЕНИ НА СВОЙ ID
+                self.sheet = client.open_by_key(sheet_id).sheet1
+                logger.info("🎉 УСПЕХ: Таблица найдена по ID!")
+                
+            except Exception as e:
+                logger.error(f"❌ Ошибка при открытии таблицы по ID: {e}")
+                
+            # Проверяем подключение
+            if self.sheet:
+                try:
+                    # Пробуем прочитать первую ячейку
+                    test_value = self.sheet.acell('A1').value
+                    logger.info(f"✅ Тест подключения успешен! A1 = '{test_value}'")
+                except Exception as e:
+                    logger.error(f"❌ Ошибка при тесте таблицы: {e}")
+                    self.sheet = None
+                    
+        except Exception as e:
+            logger.error(f"💥 ОШИБКА подключения: {str(e)}")
+            self.sheet = None
 
     def generate_application_number(self) -> str:
         """Генерация номера заявки"""
@@ -324,7 +318,6 @@ def main():
         
     if not GOOGLE_CREDENTIALS:
         logger.error("❌ GOOGLE_CREDENTIALS не найдены!")
-        # Но все равно запускаем бота - он будет работать без сохранения
     
     logger.info("🤖 Запуск бота...")
     
@@ -354,4 +347,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
