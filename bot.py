@@ -40,7 +40,7 @@ AVAILABLE_EQUIPMENT = """
 """
 
 # ID твоего телеграм аккаунта для уведомлений (замени на свой)
-ADMIN_CHAT_ID = "@motomoto_ph"  # ← ЗАМЕНИ НА СВОЙ TELEGRAM ID
+ADMIN_CHAT_ID = "730691574"  # ← ЗАМЕНИ НА СВОЙ TELEGRAM ID
 
 class EquipmentBot:
     def __init__(self):
@@ -618,3 +618,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
