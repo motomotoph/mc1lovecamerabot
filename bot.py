@@ -6,9 +6,6 @@ from telegram.ext import (
     ContextTypes, ConversationHandler
 )
 from datetime import datetime
-import gspread
-from google.oauth2.service_account import Credentials
-import json
 
 # Настройка логирования
 logging.basicConfig(
@@ -42,53 +39,61 @@ AVAILABLE_EQUIPMENT = """
 class EquipmentBot:
     def __init__(self):
         self.user_data = {}
+        self.sheet = None
         self.setup_google_sheets()
         
     def setup_google_sheets(self):
-        """Настройка подключения к Google Sheets"""
+        """Упрощенное подключение к Google Sheets"""
         try:
-            # Получаем credentials из переменной окружения
+            logger.info("🔄 Попытка подключения к Google Sheets...")
+            
+            # Проверяем наличие переменных
+            bot_token = os.getenv('BOT_TOKEN')
             creds_json = os.getenv('GOOGLE_CREDENTIALS')
             
+            if not bot_token:
+                logger.error("❌ BOT_TOKEN не найден!")
+                
             if not creds_json:
-                logger.error("GOOGLE_CREDENTIALS не найдены!")
+                logger.error("❌ GOOGLE_CREDENTIALS не найдены!")
                 return
                 
-            # Конвертируем JSON строку в словарь
+            logger.info("✅ Переменные окружения найдены")
+            
+            # Импортируем библиотеки только когда нужно
+            import gspread
+            from google.oauth2.service_account import Credentials
+            import json
+            
+            # Загружаем credentials
             creds_dict = json.loads(creds_json)
             
-            # Правильные scopes для Google Sheets
-            scope = [
-                'https://www.googleapis.com/auth/spreadsheets',
-                'https://www.googleapis.com/auth/drive.file'
-            ]
+            # Минимальные scopes
+            scope = ['https://www.googleapis.com/auth/spreadsheets']
             
+            # Создаем credentials
             creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
-            self.gc = gspread.authorize(creds)
+            client = gspread.authorize(creds)
             
             # Открываем таблицу
-            self.sheet = self.gc.open("Заявки на оборудование").sheet1
+            self.sheet = client.open("Заявки на оборудование").sheet1
             
-            logger.info("✅ Успешно подключились к Google Sheets!")
+            logger.info("🎉 УСПЕХ: Подключение к Google Sheets установлено!")
             
         except Exception as e:
-            logger.error(f"❌ Ошибка подключения к Google Sheets: {e}")
+            logger.error(f"💥 ОШИБКА подключения: {str(e)}")
             self.sheet = None
 
     def generate_application_number(self) -> str:
-        """Генерация номера заявки формата mc00000"""
+        """Генерация номера заявки"""
         try:
             if not self.sheet:
                 return "mc00001"
                 
-            # Получаем все существующие заявки
+            # Получаем все записи
             records = self.sheet.get_all_records()
-            
-            if not records:
-                return "mc00001"
-            
-            # Ищем максимальный номер в первом столбце
             max_number = 0
+            
             for record in records:
                 values = list(record.values())
                 if values:
@@ -100,21 +105,17 @@ class EquipmentBot:
                         except ValueError:
                             continue
             
-            next_number = max_number + 1
-            return f"mc{next_number:05d}"
+            return f"mc{max_number + 1:05d}"
             
         except Exception as e:
-            logger.error(f"Ошибка генерации номера заявки: {e}")
+            logger.error(f"Ошибка генерации номера: {e}")
             return "mc00001"
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Начало диалога"""
         user = update.message.from_user
         
-        # Генерируем номер заявки
         app_number = self.generate_application_number()
-        
-        # Создаем ссылку на пользователя
         user_link = f"https://t.me/{user.username}" if user.username else f"tg://user?id={user.id}"
         
         self.user_data[user.id] = {
@@ -169,17 +170,8 @@ class EquipmentBot:
         user = update.message.from_user
         self.user_data[user.id]['dates'] = update.message.text
         
-        summary = self._create_summary(user.id)
-        keyboard = [["✅ Подтвердить", "✏️ Редактировать"]]
-        reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
-        
-        await update.message.reply_text(summary, reply_markup=reply_markup)
-        return CONFIRMATION
-
-    def _create_summary(self, user_id: int) -> str:
-        """Создание сводки заявки"""
-        data = self.user_data[user_id]
-        return f"""
+        data = self.user_data[user.id]
+        summary = f"""
 📋 Сводка заявки #{data['app_number']}
 
 👤 ФИО: {data['full_name']}
@@ -188,35 +180,41 @@ class EquipmentBot:
 📅 Даты и время: {data['dates']}
 ⏰ Создано: {data['created_at']}
         """
+        
+        keyboard = [["✅ Подтвердить", "✏️ Редактировать"]]
+        reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+        
+        await update.message.reply_text(summary, reply_markup=reply_markup)
+        return CONFIRMATION
 
     async def save_to_google_sheets(self, user_id: int) -> bool:
         """Сохранение заявки в Google Sheets"""
         try:
             if not self.sheet:
-                logger.error("Google Sheets не настроен")
+                logger.error("❌ Google Sheets не доступен")
                 return False
                 
             data = self.user_data[user_id]
             
-            # Подготавливаем данные для таблицы
+            # Подготавливаем данные
             row = [
-                data['app_number'],           # Номер заявки
-                data['created_at'],           # Дата создания
-                data['full_name'],           # ФИО
-                data['unit'],                # Проект/Отдел
-                data['equipment'],           # Оборудование
-                data['dates'],               # Даты
-                data['username'],            # Username
-                data['user_link']            # Ссылка на пользователя
+                data['app_number'],
+                data['created_at'], 
+                data['full_name'],
+                data['unit'],
+                data['equipment'],
+                data['dates'],
+                data['username'],
+                data['user_link']
             ]
             
-            # Добавляем строку в таблицу
+            # Добавляем строку
             self.sheet.append_row(row)
-            logger.info(f"✅ Заявка {data['app_number']} сохранена в Google Sheets!")
+            logger.info(f"✅ Заявка {data['app_number']} сохранена!")
             return True
             
         except Exception as e:
-            logger.error(f"❌ Ошибка сохранения в Google Sheets: {e}")
+            logger.error(f"💥 ОШИБКА сохранения: {str(e)}")
             return False
 
     async def handle_confirmation(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -225,7 +223,7 @@ class EquipmentBot:
         choice = update.message.text
         
         if choice == "✅ Подтвердить":
-            # Сохраняем в Google Sheets
+            # Пробуем сохранить
             success = await self.save_to_google_sheets(user.id)
             
             if success:
@@ -273,7 +271,16 @@ class EquipmentBot:
             await update.message.reply_text("Укажите даты и время:")
             return DATES
         elif choice == "🔙 Назад к сводке":
-            summary = self._create_summary(user.id)
+            data = self.user_data[user.id]
+            summary = f"""
+📋 Сводка заявки #{data['app_number']}
+
+👤 ФИО: {data['full_name']}
+🏢 Структурная единица/Проект: {data['unit']}
+📹 Оборудование: {data['equipment']}
+📅 Даты и время: {data['dates']}
+⏰ Создано: {data['created_at']}
+            """
             keyboard = [["✅ Подтвердить", "✏️ Редактировать"]]
             reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
             await update.message.reply_text(summary, reply_markup=reply_markup)
@@ -288,17 +295,19 @@ class EquipmentBot:
         return ConversationHandler.END
 
 def main():
-    # Получаем токен из переменных окружения
+    # Проверяем переменные
     BOT_TOKEN = os.getenv('BOT_TOKEN')
+    GOOGLE_CREDENTIALS = os.getenv('GOOGLE_CREDENTIALS')
     
     if not BOT_TOKEN:
-        logger.error("❌ Токен бота не найден! Установите переменную BOT_TOKEN")
+        logger.error("❌ BOT_TOKEN не найден!")
         return
+        
+    if not GOOGLE_CREDENTIALS:
+        logger.error("❌ GOOGLE_CREDENTIALS не найдены!")
+        # Но все равно запускаем бота - он будет работать без сохранения
     
-    # Проверяем наличие Google credentials
-    if not os.getenv('GOOGLE_CREDENTIALS'):
-        logger.error("❌ GOOGLE_CREDENTIALS не найдены! Добавьте их в переменные окружения")
-        return
+    logger.info("🤖 Запуск бота...")
     
     bot = EquipmentBot()
     application = Application.builder().token(BOT_TOKEN).build()
@@ -321,7 +330,7 @@ def main():
     application.add_handler(conv_handler)
     
     # Запускаем бота
-    logger.info("🤖 Бот запущен!")
+    logger.info("🎉 Бот запущен!")
     application.run_polling()
 
 if __name__ == '__main__':
