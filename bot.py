@@ -18,7 +18,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Состояния разговора
-FIO, UNIT, EQUIPMENT, DATES, CONFIRMATION = range(5)
+FIO, UNIT, EQUIPMENT, DATES, TIME_SELECTION, CONFIRMATION = range(6)
 
 # Список доступного оборудования
 AVAILABLE_EQUIPMENT = """
@@ -38,6 +38,9 @@ AVAILABLE_EQUIPMENT = """
 - DJI Ronin RS2 (2 шт.)
 - Триподы Manfrotto (5 шт.)
 """
+
+# ID твоего телеграм аккаунта для уведомлений (замени на свой)
+ADMIN_CHAT_ID = "@motomoto_ph"  # ← ЗАМЕНИ НА СВОЙ TELEGRAM ID
 
 class EquipmentBot:
     def __init__(self):
@@ -156,7 +159,7 @@ class EquipmentBot:
             'full_name': '',
             'unit': '',
             'equipment': '',
-            'dates': '',
+            'dates': [],
             'created_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
         
@@ -191,10 +194,13 @@ class EquipmentBot:
         
         # Создаем клавиатуру для выбора дат
         keyboard = self._create_dates_keyboard()
-        reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+        reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=False, resize_keyboard=True)
         
         await update.message.reply_text(
-            "Выберите даты бронирования оборудования:",
+            "📅 *Выберите даты бронирования:*\n\n"
+            "Можно выбрать несколько дат - просто нажимайте на нужные даты.\n"
+            "Когда закончите, нажмите '✅ Завершить выбор дат'",
+            parse_mode='Markdown',
             reply_markup=reply_markup
         )
         return DATES
@@ -209,12 +215,13 @@ class EquipmentBot:
         for i in range(14):
             date = today + timedelta(days=i+2)  # +2 дня потому что за 48 часов
             date_str = date.strftime("%d.%m.%Y")
-            button_text = f"📅 {date_str}"
+            day_name = date.strftime("%a")
+            button_text = f"📅 {date_str} ({day_name})"
             
             row.append(button_text)
             
-            # Создаем ряды по 3 кнопки
-            if len(row) == 3:
+            # Создаем ряды по 2 кнопки (больше места)
+            if len(row) == 2:
                 dates_keyboard.append(row)
                 row = []
         
@@ -222,108 +229,154 @@ class EquipmentBot:
         if row:
             dates_keyboard.append(row)
             
-        # Добавляем кнопку ручного ввода
+        # Добавляем кнопки управления
+        dates_keyboard.append(["✅ Завершить выбор дат", "🔄 Очистить выбор"])
         dates_keyboard.append(["✏️ Ввести даты вручную"])
         
         return dates_keyboard
 
     async def get_dates(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        """Получение дат через кнопки или ручной ввод"""
+        """Обработка выбора дат"""
         user = update.message.from_user
         choice = update.message.text
         
-        if choice == "✏️ Ввести даты вручную":
+        if choice == "✅ Завершить выбор дат":
+            # Проверяем, что выбрана хотя бы одна дата
+            if not self.user_data[user.id]['dates']:
+                await update.message.reply_text(
+                    "❌ Вы не выбрали ни одной даты. Пожалуйста, выберите хотя бы одну дату."
+                )
+                return DATES
+            
+            # Переходим к выбору времени
+            return await self.ask_for_time(update, context)
+            
+        elif choice == "🔄 Очистить выбор":
+            # Очищаем выбранные даты
+            self.user_data[user.id]['dates'] = []
+            keyboard = self._create_dates_keyboard()
+            reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=False, resize_keyboard=True)
+            
+            await update.message.reply_text(
+                "✅ Выбор дат очищен. Выберите даты заново:",
+                reply_markup=reply_markup
+            )
+            return DATES            
+        elif choice == "✏️ Ввести даты вручную":
             await update.message.reply_text(
                 "Введите даты в формате: ДД.ММ.ГГГГ ЧЧ:ММ - ДД.ММ.ГГГГ ЧЧ:ММ\n\n"
-                "Пример: 15.12.2024 10:00 - 16.12.2024 18:00",
+                "Пример: 15.12.2024 10:00 - 16.12.2024 18:00\n"
+                "Или несколько периодов через запятую:\n"
+                "15.12.2024 10:00-13:00, 16.12.2024 14:00-18:00",
                 reply_markup=ReplyKeyboardRemove()
             )
             return DATES
         else:
             # Обрабатываем выбор даты из кнопок
-            selected_date = choice.replace("📅 ", "").strip()
+            selected_date = choice.replace("📅 ", "").split(" (")[0].strip()
             
-            # Предлагаем выбрать временной промежуток
-            time_keyboard = [
-                ["🕘 09:00 - 13:00", "🕐 13:00 - 17:00", "🕔 17:00 - 21:00"],
-                ["🌅 Утро (09:00 - 12:00)", "🌞 День (12:00 - 18:00)"],
-                ["🌙 Вечер (18:00 - 21:00)", "📆 Полный день (09:00 - 21:00)"],
-                ["✏️ Указать свое время"]
-            ]
-            reply_markup = ReplyKeyboardMarkup(time_keyboard, one_time_keyboard=True, resize_keyboard=True)
+            # Добавляем дату в список (если еще нет)
+            if selected_date not in self.user_data[user.id]['dates']:
+                self.user_data[user.id]['dates'].append(selected_date)
             
-            # Сохраняем выбранную дату во временные данные
-            context.user_data['selected_date'] = selected_date
+            # Показываем текущий выбор
+            selected_dates = self.user_data[user.id]['dates']
+            dates_text = "\n".join([f"• {date}" for date in selected_dates])
+            
+            keyboard = self._create_dates_keyboard()
+            reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=False, resize_keyboard=True)
             
             await update.message.reply_text(
-                f"Выбрана дата: {selected_date}\nТеперь выберите временной промежуток:",
+                f"✅ Выбранные даты:\n{dates_text}\n\n"
+                f"Продолжайте выбирать даты или нажмите '✅ Завершить выбор дат'",
                 reply_markup=reply_markup
             )
             return DATES
+
+    async def ask_for_time(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Запрос временного промежутка"""
+        user = update.message.from_user
+        
+        # Предлагаем выбрать временной промежуток
+        time_keyboard = [
+            ["🕘 09:00 - 13:00", "🕐 13:00 - 17:00", "🕔 17:00 - 21:00"],
+            ["🌅 Утро (09:00 - 12:00)", "🌞 День (12:00 - 18:00)"],
+            ["🌙 Вечер (18:00 - 21:00)", "📆 Полный день (09:00 - 21:00)"],
+            ["✏️ Указать свое время"]
+        ]
+        reply_markup = ReplyKeyboardMarkup(time_keyboard, one_time_keyboard=True, resize_keyboard=True)
+        
+        selected_dates = self.user_data[user.id]['dates']
+        dates_text = "\n".join([f"• {date}" for date in selected_dates])
+        
+        await update.message.reply_text(
+            f"📅 Выбранные даты:\n{dates_text}\n\n"
+            "⏰ Теперь выберите временной промежуток (будет применен ко всем выбранным датам):",
+            reply_markup=reply_markup
+        )
+        return TIME_SELECTION
 
     async def handle_time_selection(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Обработка выбора времени"""
         user = update.message.from_user
         time_choice = update.message.text
-        selected_date = context.user_data.get('selected_date')
         
         if time_choice == "✏️ Указать свое время":
             await update.message.reply_text(
                 "Введите время в формате: ЧЧ:ММ - ЧЧ:ММ\n\n"
-                "Пример: 10:00 - 18:00",
+                "Пример: 10:00 - 18:00\n"
+                "Это время будет применено ко всем выбранным датам.",
                 reply_markup=ReplyKeyboardRemove()
             )
-            return DATES
+            return TIME_SELECTION
         else:
-            # Формируем полную строку с датой и временем
+            # Формируем полные строки с датами и временем
             time_mapping = {
-                "🕘 09:00 - 13:00": "09:00 - 13:00",
-                "🕐 13:00 - 17:00": "13:00 - 17:00", 
-                "🕔 17:00 - 21:00": "17:00 - 21:00",
-                "🌅 Утро (09:00 - 12:00)": "09:00 - 12:00",
-                "🌞 День (12:00 - 18:00)": "12:00 - 18:00",
-                "🌙 Вечер (18:00 - 21:00)": "18:00 - 21:00",
-                "📆 Полный день (09:00 - 21:00)": "09:00 - 21:00"
+                "🕘 09:00 - 13:00": "09:00-13:00",
+                "🕐 13:00 - 17:00": "13:00-17:00", 
+                "🕔 17:00 - 21:00": "17:00-21:00",
+                "🌅 Утро (09:00 - 12:00)": "09:00-12:00",
+                "🌞 День (12:00 - 18:00)": "12:00-18:00",
+                "🌙 Вечер (18:00 - 21:00)": "18:00-21:00",
+                "📆 Полный день (09:00 - 21:00)": "09:00-21:00"
             }
             
-            time_range = time_mapping.get(time_choice, time_choice)
-            full_dates = f"{selected_date} {time_range}"
+            time_range = time_mapping.get(time_choice, time_choice.replace(" - ", "-"))
             
-            self.user_data[user.id]['dates'] = full_dates
+            # Создаем список дат с временем
+            dates_with_time = []
+            for date in self.user_data[user.id]['dates']:
+                dates_with_time.append(f"{date} {time_range}")
+            
+            self.user_data[user.id]['dates'] = dates_with_time
             
             # Показываем сводку
             return await self.show_summary(update, context)
 
-    async def get_dates_manual(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    async def handle_manual_time(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Обработка ручного ввода времени"""
+        user = update.message.from_user
+        time_range = update.message.text.replace(" - ", "-")
+        
+        # Создаем список дат с временем
+        dates_with_time = []
+        for date in self.user_data[user.id]['dates']:
+            dates_with_time.append(f"{date} {time_range}")
+        
+        self.user_data[user.id]['dates'] = dates_with_time
+        
+        # Показываем сводку
+        return await self.show_summary(update, context)
+
+    async def handle_manual_dates(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Обработка ручного ввода дат"""
         user = update.message.from_user
         dates_text = update.message.text
         
-        # Проверяем минимальный срок бронирования (48 часов)
-        try:
-            # Простая проверка - если в тексте есть дата сегодня или завтра
-            today = datetime.now().strftime("%d.%m.%Y")
-            tomorrow = (datetime.now() + timedelta(days=1)).strftime("%d.%m.%Y")
-            
-            if today in dates_text or tomorrow in dates_text:
-                await update.message.reply_text(
-                    "❌ *Внимание!* Заявки принимаются минимум за 48 часов.\n"
-                    "Пожалуйста, выберите дату не ранее чем через 2 дня.",
-                    parse_mode='Markdown'
-                )
-                # Возвращаем к выбору дат
-                keyboard = self._create_dates_keyboard()
-                reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
-                await update.message.reply_text(
-                    "Выберите даты бронирования оборудования:",
-                    reply_markup=reply_markup
-                )
-                return DATES
-                
-        except Exception as e:
-            logger.error(f"Ошибка проверки дат: {e}")
+        # Сохраняем как список с одним элементом (ручной ввод)
+        self.user_data[user.id]['dates'] = [dates_text]
         
-        self.user_data[user.id]['dates'] = dates_text
+        # Показываем сводку
         return await self.show_summary(update, context)
 
     async def show_summary(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -331,13 +384,19 @@ class EquipmentBot:
         user = update.message.from_user
         data = self.user_data[user.id]
         
+        # Форматируем даты для отображения
+        if isinstance(data['dates'], list):
+            dates_display = "\n".join([f"• {date}" for date in data['dates']])
+        else:
+            dates_display = data['dates']
+        
         summary = f"""
 📋 Сводка заявки #{data['app_number']}
 
 👤 ФИО: {data['full_name']}
 🏢 Структурная единица/Проект: {data['unit']}
 📹 Оборудование: {data['equipment']}
-📅 Даты и время: {data['dates']}
+📅 Даты и время:\n{dates_display}
 ⏰ Создано: {data['created_at']}
         """
         
@@ -356,6 +415,12 @@ class EquipmentBot:
                 
             data = self.user_data[user_id]
             
+            # Форматируем даты для сохранения
+            if isinstance(data['dates'], list):
+                dates_for_sheet = ", ".join(data['dates'])
+            else:
+                dates_for_sheet = data['dates']
+            
             # Подготавливаем данные
             row = [
                 data['app_number'],
@@ -363,7 +428,7 @@ class EquipmentBot:
                 data['full_name'],
                 data['unit'],
                 data['equipment'],
-                data['dates'],
+                dates_for_sheet,  # Сохраняем отформатированные даты
                 data['username'],
                 data['user_link']
             ]
@@ -377,6 +442,43 @@ class EquipmentBot:
             logger.error(f"💥 ОШИБКА сохранения: {str(e)}")
             return False
 
+    async def send_admin_notification(self, user_data: dict):
+        """Отправка уведомления администратору"""
+        try:
+            # Форматируем даты для уведомления
+            if isinstance(user_data['dates'], list):
+                dates_display = "\n".join([f"• {date}" for date in user_data['dates']])
+            else:
+                dates_display = user_data['dates']
+            
+            notification = f"""
+🚨 *НОВАЯ ЗАЯВКА НА ОБОРУДОВАНИЕ*
+
+📋 Номер: #{user_data['app_number']}
+👤 ФИО: {user_data['full_name']}
+🏢 Проект: {user_data['unit']}
+📹 Оборудование: {user_data['equipment']}
+📅 Даты:\n{dates_display}
+👤 Username: @{user_data['username']}
+🔗 Ссылка: {user_data['user_link']}
+⏰ Время заявки: {user_data['created_at']}
+            """
+            
+            # Отправляем уведомление администратору
+            from telegram.constants import ParseMode
+            application = Application.builder().token(os.getenv('BOT_TOKEN')).build()
+            
+            await application.bot.send_message(
+                chat_id=ADMIN_CHAT_ID,
+                text=notification,
+                parse_mode=ParseMode.MARKDOWN
+            )
+            
+            logger.info(f"✅ Уведомление отправлено администратору")
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка отправки уведомления: {e}")
+
     async def handle_confirmation(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Обработка подтверждения с кнопкой новой заявки"""
         user = update.message.from_user
@@ -388,6 +490,9 @@ class EquipmentBot:
             
             if success:
                 app_number = self.user_data[user.id]['app_number']
+                
+                # Отправляем уведомление администратору
+                await self.send_admin_notification(self.user_data[user.id])
                 
                 # Клавиатура с кнопкой новой заявки
                 new_request_keyboard = [["📝 Новая заявка"]]
@@ -433,8 +538,10 @@ class EquipmentBot:
             await update.message.reply_text(f"Введите список оборудования:\n\n{AVAILABLE_EQUIPMENT}")
             return EQUIPMENT
         elif choice == "📅 Даты":
+            # Сбрасываем выбранные даты
+            self.user_data[user.id]['dates'] = []
             keyboard = self._create_dates_keyboard()
-            reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+            reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=False, resize_keyboard=True)
             await update.message.reply_text("Выберите даты бронирования:", reply_markup=reply_markup)
             return DATES
         elif choice == "🔙 Назад к сводке":
@@ -487,9 +594,13 @@ def main():
             UNIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.get_unit)],
             EQUIPMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.get_equipment)],
             DATES: [
-                MessageHandler(filters.Regex("^(📅 |✏️ Ввести даты вручную)$"), bot.get_dates),
-                MessageHandler(filters.Regex("^(🕘 |🕐 |🕔 |🌅 |🌞 |🌙 |📆 |✏️ Указать свое время)$"), bot.handle_time_selection),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, bot.get_dates_manual)
+                MessageHandler(filters.Regex("^(✅ Завершить выбор дат|🔄 Очистить выбор|✏️ Ввести даты вручную)$"), bot.get_dates),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, bot.get_dates)
+            ],
+            TIME_SELECTION: [
+                MessageHandler(filters.Regex("^(✏️ Указать свое время)$"), bot.handle_time_selection),
+                MessageHandler(filters.Regex("^(🕘 |🕐 |🕔 |🌅 |🌞 |🌙 |📆 )"), bot.handle_time_selection),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_manual_time)
             ],
             CONFIRMATION: [
                 MessageHandler(filters.Regex("^(✅ Подтвердить|✏️ Редактировать)$"), bot.handle_confirmation),
