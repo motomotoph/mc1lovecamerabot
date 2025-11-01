@@ -8,6 +8,7 @@ from telegram.ext import (
 from datetime import datetime
 import gspread
 from google.oauth2.service_account import Credentials
+import json
 
 # Настройка логирования
 logging.basicConfig(
@@ -46,22 +47,32 @@ class EquipmentBot:
     def setup_google_sheets(self):
         """Настройка подключения к Google Sheets"""
         try:
-            # Используем переменные окружения Render
+            # Получаем credentials из переменной окружения
             creds_json = os.getenv('GOOGLE_CREDENTIALS')
-            if creds_json:
-                import json
-                creds_dict = json.loads(creds_json)
-                creds = Credentials.from_service_account_info(creds_dict)
-            else:
-                # Для локальной разработки
-                scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-                creds = Credentials.from_service_account_file('credentials.json', scopes=scope)
             
+            if not creds_json:
+                logger.error("GOOGLE_CREDENTIALS не найдены!")
+                return
+                
+            # Конвертируем JSON строку в словарь
+            creds_dict = json.loads(creds_json)
+            
+            # Правильные scopes для Google Sheets
+            scope = [
+                'https://www.googleapis.com/auth/spreadsheets',
+                'https://www.googleapis.com/auth/drive.file'
+            ]
+            
+            creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
             self.gc = gspread.authorize(creds)
+            
+            # Открываем таблицу
             self.sheet = self.gc.open("Заявки на оборудование").sheet1
-            logger.info("Успешно подключились к Google Sheets")
+            
+            logger.info("✅ Успешно подключились к Google Sheets!")
+            
         except Exception as e:
-            logger.error(f"Ошибка подключения к Google Sheets: {e}")
+            logger.error(f"❌ Ошибка подключения к Google Sheets: {e}")
             self.sheet = None
 
     def generate_application_number(self) -> str:
@@ -76,20 +87,21 @@ class EquipmentBot:
             if not records:
                 return "mc00001"
             
-            # Ищем максимальный номер
+            # Ищем максимальный номер в первом столбце
             max_number = 0
             for record in records:
-                # Предполагаем, что номер заявки в первом столбце
-                app_number = list(record.values())[0] if record else ""
-                if isinstance(app_number, str) and app_number.startswith('mc'):
-                    try:
-                        current_num = int(app_number[2:])
-                        max_number = max(max_number, current_num)
-                    except ValueError:
-                        continue
+                values = list(record.values())
+                if values:
+                    app_number = values[0]
+                    if isinstance(app_number, str) and app_number.startswith('mc'):
+                        try:
+                            current_num = int(app_number[2:])
+                            max_number = max(max_number, current_num)
+                        except ValueError:
+                            continue
             
             next_number = max_number + 1
-            return f"mc{next_number:05d}"  # Формат mc00000
+            return f"mc{next_number:05d}"
             
         except Exception as e:
             logger.error(f"Ошибка генерации номера заявки: {e}")
@@ -106,7 +118,7 @@ class EquipmentBot:
         user_link = f"https://t.me/{user.username}" if user.username else f"tg://user?id={user.id}"
         
         self.user_data[user.id] = {
-            'app_number': app_number,  # ✅ Добавляем номер заявки
+            'app_number': app_number,
             'username': user.username or 'Не указан',
             'user_link': user_link,
             'full_name': '',
@@ -188,7 +200,7 @@ class EquipmentBot:
             
             # Подготавливаем данные для таблицы
             row = [
-                data['app_number'],           # ✅ Номер заявки (ПЕРВЫЙ СТОЛБЕЦ!)
+                data['app_number'],           # Номер заявки
                 data['created_at'],           # Дата создания
                 data['full_name'],           # ФИО
                 data['unit'],                # Проект/Отдел
@@ -200,11 +212,11 @@ class EquipmentBot:
             
             # Добавляем строку в таблицу
             self.sheet.append_row(row)
-            logger.info(f"Заявка {data['app_number']} сохранена в Google Sheets")
+            logger.info(f"✅ Заявка {data['app_number']} сохранена в Google Sheets!")
             return True
             
         except Exception as e:
-            logger.error(f"Ошибка сохранения в Google Sheets: {e}")
+            logger.error(f"❌ Ошибка сохранения в Google Sheets: {e}")
             return False
 
     async def handle_confirmation(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -276,11 +288,16 @@ class EquipmentBot:
         return ConversationHandler.END
 
 def main():
-    # Получаем токен из переменных окружения Render
+    # Получаем токен из переменных окружения
     BOT_TOKEN = os.getenv('BOT_TOKEN')
     
     if not BOT_TOKEN:
-        logger.error("Токен бота не найден! Установите переменную BOT_TOKEN в Render.com")
+        logger.error("❌ Токен бота не найден! Установите переменную BOT_TOKEN")
+        return
+    
+    # Проверяем наличие Google credentials
+    if not os.getenv('GOOGLE_CREDENTIALS'):
+        logger.error("❌ GOOGLE_CREDENTIALS не найдены! Добавьте их в переменные окружения")
         return
     
     bot = EquipmentBot()
@@ -304,7 +321,7 @@ def main():
     application.add_handler(conv_handler)
     
     # Запускаем бота
-    logger.info("Бот запущен на Render.com!")
+    logger.info("🤖 Бот запущен!")
     application.run_polling()
 
 if __name__ == '__main__':
