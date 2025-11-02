@@ -3,6 +3,8 @@ import logging
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 from datetime import datetime, timedelta
+import gspread
+from google.oauth2.service_account import Credentials
 
 # Настройка логирования
 logging.basicConfig(
@@ -16,6 +18,9 @@ FIO, UNIT, EQUIPMENT, DATES, TIME_SELECTION, CONFIRMATION = range(6)
 
 # ID администраторов для уведомлений
 ADMIN_CHAT_IDS = [730691574, 2114604500]  # ЗАМЕНИ НА РЕАЛЬНЫЕ ID
+
+# ID Google таблицы (можно получить из URL)
+SPREADSHEET_ID = "1IhI_3WR2y8iBLQa9X_-0Vjn0RGnuTVpghNSurkmnlRk"  # ЗАМЕНИ НА РЕАЛЬНЫЙ ID
 
 # Список доступного оборудования
 AVAILABLE_EQUIPMENT = """
@@ -36,9 +41,204 @@ AVAILABLE_EQUIPMENT = """
 - Триподы Manfrotto (5 шт.)
 """
 
+class GoogleSheetsManager:
+    def __init__(self, creds_file: str, spreadsheet_id: str):
+        self.creds_file = creds_file
+        self.spreadsheet_id = spreadsheet_id
+        self.client = None
+        self.spreadsheet = None
+        self._connect()
+    
+    def _connect(self):
+        """Подключение к Google Таблицам по ID"""
+        try:
+            # Область доступа
+            scopes = [
+                "https://www.googleapis.com/auth/spreadsheets",
+                "https://www.googleapis.com/auth/drive"
+            ]
+            
+            # Авторизация
+            creds = Credentials.from_service_account_file(self.creds_file, scopes=scopes)
+            self.client = gspread.authorize(creds)
+            
+            # Открытие таблицы по ID
+            self.spreadsheet = self.client.open_by_key(self.spreadsheet_id)
+            logger.info("✅ Успешно подключено к Google Таблицам по ID")
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка подключения к Google Таблицам: {e}")
+            # Создаем заглушку чтобы бот работал даже без таблиц
+            self.spreadsheet = None
+    
+    def setup_sheets(self):
+        """Настройка листов в таблице"""
+        if not self.spreadsheet:
+            logger.warning("❌ Таблица не доступна, пропускаем настройку")
+            return False
+            
+        try:
+            # Лист для заявок
+            try:
+                applications_sheet = self.spreadsheet.worksheet("Заявки")
+                logger.info("✅ Лист 'Заявки' уже существует")
+            except gspread.WorksheetNotFound:
+                applications_sheet = self.spreadsheet.add_worksheet(
+                    title="Заявки", rows="1000", cols="15"
+                )
+                # Заголовки для заявок
+                headers = [
+                    "Номер заявки", "Дата создания", "ID пользователя", 
+                    "ФИО", "Username", "Ссылка на пользователя",
+                    "Подразделение/Цель", "Оборудование", 
+                    "Даты бронирования", "Статус", "Время обработки",
+                    "Комментарий администратора", "Телеграм для связи",
+                    "Дата последнего обновления"
+                ]
+                applications_sheet.append_row(headers)
+                logger.info("✅ Создан новый лист 'Заявки' с заголовками")
+            
+            # Лист для пользователей
+            try:
+                users_sheet = self.spreadsheet.worksheet("Пользователи")
+                logger.info("✅ Лист 'Пользователи' уже существует")
+            except gspread.WorksheetNotFound:
+                users_sheet = self.spreadsheet.add_worksheet(
+                    title="Пользователи", rows="1000", cols="10"
+                )
+                # Заголовки для пользователей
+                headers = [
+                    "ID пользователя", "ФИО", "Username", "Дата регистрации",
+                    "Количество заявок", "Последняя заявка", "Статус",
+                    "Дата последней активности"
+                ]
+                users_sheet.append_row(headers)
+                logger.info("✅ Создан новый лист 'Пользователи' с заголовками")
+            
+            logger.info("✅ Все листы Google Таблиц настроены")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка настройки листов: {e}")
+            return False
+    
+    def add_application(self, application_data: dict) -> bool:
+        """Добавление новой заявки в таблицу"""
+        if not self.spreadsheet:
+            logger.warning("❌ Таблица не доступна, пропускаем сохранение заявки")
+            return False
+            
+        try:
+            sheet = self.spreadsheet.worksheet("Заявки")
+            
+            application_row = [
+                application_data.get("app_number", ""),
+                application_data.get("created_at", ""),
+                application_data.get("user_id", ""),
+                application_data.get("full_name", ""),
+                application_data.get("username", ""),
+                application_data.get("user_link", ""),
+                application_data.get("unit", ""),
+                application_data.get("equipment", ""),
+                application_data.get("dates_display", ""),
+                "НОВАЯ",  # Статус
+                "",  # Время обработки
+                "",  # Комментарий администратора
+                f"https://t.me/{application_data.get('username', '')}",  # Ссылка для связи
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S")  # Дата обновления
+            ]
+            
+            sheet.append_row(application_row)
+            logger.info(f"✅ Заявка {application_data.get('app_number')} добавлена в Google Таблицы")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка добавления заявки: {e}")
+            return False
+    
+    def update_user(self, user_data: dict) -> bool:
+        """Добавление/обновление пользователя в таблице"""
+        if not self.spreadsheet:
+            logger.warning("❌ Таблица не доступна, пропускаем обновление пользователя")
+            return False
+            
+        try:
+            sheet = self.spreadsheet.worksheet("Пользователи")
+            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            
+            # Ищем пользователя
+            try:
+                user_cell = sheet.find(str(user_data.get("user_id")))
+                # Пользователь существует - обновляем
+                row = user_cell.row
+                sheet.update_cell(row, 2, user_data.get("full_name", ""))  # ФИО
+                sheet.update_cell(row, 3, user_data.get("username", ""))   # Username
+                
+                # Увеличиваем счетчик заявок
+                current_count = sheet.cell(row, 5).value
+                new_count = str(int(current_count) + 1) if current_count and current_count.isdigit() else "1"
+                sheet.update_cell(row, 5, new_count)
+                
+                sheet.update_cell(row, 6, current_time)  # Последняя заявка
+                sheet.update_cell(row, 8, current_time)  # Дата последней активности
+                
+                logger.info(f"✅ Пользователь {user_data.get('user_id')} обновлен в Google Таблицах")
+                
+            except gspread.exceptions.CellNotFound:
+                # Новый пользователь
+                user_row = [
+                    user_data.get("user_id", ""),
+                    user_data.get("full_name", ""),
+                    user_data.get("username", ""),
+                    current_time,  # Дата регистрации
+                    "1",  # Количество заявок
+                    current_time,  # Последняя заявка
+                    "АКТИВНЫЙ",  # Статус
+                    current_time  # Дата последней активности
+                ]
+                sheet.append_row(user_row)
+                logger.info(f"✅ Новый пользователь {user_data.get('user_id')} добавлен в Google Таблицы")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка обновления пользователя: {e}")
+            return False
+    
+    def get_user_applications(self, user_id: int) -> list:
+        """Получение заявок пользователя"""
+        if not self.spreadsheet:
+            return []
+            
+        try:
+            sheet = self.spreadsheet.worksheet("Заявки")
+            records = sheet.get_all_records()
+            
+            user_applications = []
+            for record in records:
+                if str(record.get("ID пользователя", "")) == str(user_id):
+                    user_applications.append(record)
+            
+            return user_applications
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка получения заявок пользователя: {e}")
+            return []
+
 class EquipmentBot:
     def __init__(self):
         self.user_data = {}
+        # Инициализация Google Sheets Manager с ID таблицы
+        try:
+            self.gsheets = GoogleSheetsManager(
+                creds_file="credentials.json",  # Путь к вашему JSON-файлу
+                spreadsheet_id=SPREADSHEET_ID  # Используем ID вместо названия
+            )
+            # Настройка листов при запуске
+            self.gsheets.setup_sheets()
+        except Exception as e:
+            logger.error(f"❌ Ошибка инициализации Google Таблиц: {e}")
+            self.gsheets = None
 
     def generate_application_number(self) -> str:
         """Генерация номера заявки"""
@@ -89,7 +289,6 @@ class EquipmentBot:
             
             logger.info(f"🔄 Пользователь {user.id} ввел ФИО: {user_text}")
             
-            # Проверяем что данные пользователя существуют
             if user.id not in self.user_data:
                 logger.error(f"❌ Данные пользователя {user.id} не найдены!")
                 await update.message.reply_text("❌ Сессия устарела. Пожалуйста, начните заново /start")
@@ -331,32 +530,6 @@ class EquipmentBot:
             await update.message.reply_text("❌ Ошибка. Попробуйте снова /start")
             return ConversationHandler.END
 
-    async def send_admin_notifications(self, user_data: dict, bot):
-        """Отправка уведомлений администраторам"""
-        try:
-            dates_display = "\n".join([f"• {date}" for date in user_data['dates']])
-            notification = f"""
-🚨 *НОВАЯ ЗАЯВКА*
-
-📋 #{user_data['app_number']}
-👤 {user_data['full_name']}
-🎯 {user_data['unit']}
-📹 {user_data['equipment']}
-📅 Даты:\n{dates_display}
-👤 @{user_data['username']}
-🔗 {user_data['user_link']}
-            """
-            
-            for admin_id in ADMIN_CHAT_IDS:
-                try:
-                    await bot.send_message(chat_id=admin_id, text=notification, parse_mode='Markdown')
-                    logger.info(f"✅ Уведомление отправлено admin_{admin_id}")
-                except Exception as e:
-                    logger.error(f"❌ Ошибка отправки admin_{admin_id}: {e}")
-                    
-        except Exception as e:
-            logger.error(f"💥 Ошибка уведомлений: {e}")
-
     async def handle_confirmation(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Обработка подтверждения"""
         try:
@@ -372,6 +545,35 @@ class EquipmentBot:
             if choice == "✅ Подтвердить":
                 user_data = self.user_data[user.id]
                 
+                # Сохраняем в Google Таблицы
+                if self.gsheets:
+                    try:
+                        # Подготавливаем данные для таблицы
+                        application_data = {
+                            "app_number": user_data['app_number'],
+                            "created_at": user_data['created_at'],
+                            "user_id": user.id,
+                            "full_name": user_data['full_name'],
+                            "username": user_data['username'],
+                            "user_link": user_data['user_link'],
+                            "unit": user_data['unit'],
+                            "equipment": user_data['equipment'],
+                            "dates_display": "\n".join([f"• {date}" for date in user_data['dates']])
+                        }
+                        
+                        # Добавляем заявку и обновляем пользователя
+                        self.gsheets.add_application(application_data)
+                        self.gsheets.update_user({
+                            "user_id": user.id,
+                            "full_name": user_data['full_name'],
+                            "username": user_data['username']
+                        })
+                        
+                        logger.info(f"✅ Данные заявки {user_data['app_number']} сохранены в Google Таблицы")
+                        
+                    except Exception as e:
+                        logger.error(f"❌ Ошибка сохранения в Google Таблицы: {e}")
+                
                 # Отправляем уведомления администраторам
                 await self.send_admin_notifications(user_data, context.bot)
                 
@@ -379,10 +581,11 @@ class EquipmentBot:
                 keyboard = [["📝 Новая заявка"]]
                 reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
                 
-                await update.message.reply_text(
-                    f"✅ Заявка #{user_data['app_number']} принята! С вами свяжутся.",
-                    reply_markup=reply_markup
-                )
+                success_message = f"✅ Заявка #{user_data['app_number']} принята! С вами свяжутся."
+                if not self.gsheets:
+                    success_message += "\n\n⚠️ Данные не сохранены в систему. Сообщите администратору."
+                
+                await update.message.reply_text(success_message, reply_markup=reply_markup)
                 
                 # Очищаем данные
                 del self.user_data[user.id]
@@ -402,6 +605,34 @@ class EquipmentBot:
             logger.error(f"💥 ОШИБКА в handle_confirmation: {e}")
             await update.message.reply_text("❌ Ошибка. Попробуйте снова /start")
             return ConversationHandler.END
+
+    async def send_admin_notifications(self, user_data: dict, bot):
+        """Отправка уведомлений администраторам"""
+        try:
+            dates_display = "\n".join([f"• {date}" for date in user_data['dates']])
+            notification = f"""
+🚨 *НОВАЯ ЗАЯВКА*
+
+📋 #{user_data['app_number']}
+👤 {user_data['full_name']}
+🎯 {user_data['unit']}
+📹 {user_data['equipment']}
+📅 Даты:\n{dates_display}
+👤 @{user_data['username']}
+🔗 {user_data['user_link']}
+
+{'✅ Сохранено в Google Таблицы' if self.gsheets else '⚠️ НЕ сохранено в таблицы!'}
+            """
+            
+            for admin_id in ADMIN_CHAT_IDS:
+                try:
+                    await bot.send_message(chat_id=admin_id, text=notification, parse_mode='Markdown')
+                    logger.info(f"✅ Уведомление отправлено admin_{admin_id}")
+                except Exception as e:
+                    logger.error(f"❌ Ошибка отправки admin_{admin_id}: {e}")
+                    
+        except Exception as e:
+            logger.error(f"💥 Ошибка уведомлений: {e}")
 
     async def handle_edit_choice(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Обработка редактирования"""
@@ -439,6 +670,31 @@ class EquipmentBot:
         """Новая заявка"""
         return await self.start(update, context)
 
+    async def my_applications(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать историю заявок пользователя"""
+        if not self.gsheets:
+            await update.message.reply_text("❌ Система хранения данных временно недоступна.")
+            return
+            
+        user_id = update.effective_user.id
+        applications = self.gsheets.get_user_applications(user_id)
+        
+        if not applications:
+            await update.message.reply_text("📭 У вас еще нет заявок.")
+            return
+        
+        message = "📋 Ваши последние заявки:\n\n"
+        for app in applications[:5]:  # Показываем последние 5 заявок
+            message += (
+                f"Заявка #{app.get('Номер заявки', '')}\n"
+                f"Статус: {app.get('Статус', '')}\n"
+                f"Оборудование: {app.get('Оборудование', '')[:50]}...\n"
+                f"Дата: {app.get('Дата создания', '')}\n"
+                f"——————————————\n"
+            )
+        
+        await update.message.reply_text(message)
+
     async def cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Отмена"""
         try:
@@ -467,6 +723,7 @@ def main():
         
         # Обработчики
         application.add_handler(MessageHandler(filters.Regex("^📝 Новая заявка$"), bot.new_request))
+        application.add_handler(CommandHandler("myapps", bot.my_applications))
         
         conv_handler = ConversationHandler(
             entry_points=[CommandHandler('start', bot.start)],
