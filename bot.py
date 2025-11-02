@@ -128,61 +128,18 @@ class EquipmentBot:
         return FIO
 
     async def get_fio(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Получение и проверка ФИО"""
-    try:
+        """Получение ФИО"""
         user = update.message.from_user
         user_text = update.message.text.strip()
         
-        logger.info(f"🔄 Пользователь {user.id} ввел ФИО: '{user_text}'")
-        
-        # Проверка на пустой ввод
-        if not user_text:
-            await update.message.reply_text("❌ ФИО не может быть пустым. Пожалуйста, введите ваше ФИО:")
+        # Простая проверка
+        if not user_text or len(user_text) < 2:
+            await update.message.reply_text("❌ Пожалуйста, введите ваше ФИО:")
             return FIO
         
-        # Проверка минимальной длины
-        if len(user_text) < 2:
-            await update.message.reply_text("❌ ФИО слишком короткое. Пожалуйста, введите полное ФИО:")
-            return FIO
-        
-        # Проверка максимальной длины
-        if len(user_text) > 100:
-            await update.message.reply_text("❌ ФИО слишком длинное. Пожалуйста, введите корректное ФИО:")
-            return FIO
-        
-        # Упрощенная проверка на наличие только букв и пробелов (без регулярных выражений)
-        has_invalid_chars = False
-        for char in user_text:
-            if not (char.isalpha() or char.isspace() or char == '-' or char == '.'):
-                has_invalid_chars = True
-                break
-        
-        if has_invalid_chars:
-            await update.message.reply_text(
-                "❌ ФИО может содержать только буквы, пробелы, дефисы и точки. "
-                "Пожалуйста, введите корректное ФИО:"
-            )
-            return FIO
-        
-        # Проверка на количество слов (должно быть минимум 2 слова)
-        words = user_text.split()
-        if len(words) < 2:
-            await update.message.reply_text(
-                "❌ Пожалуйста, введите полное ФИО (Имя и Фамилию):"
-            )
-            return FIO
-        
-        # Если все проверки пройдены - сохраняем
+        # Сохраняем
         self.user_data[user.id]['full_name'] = user_text
-        logger.info(f"✅ ФИО успешно сохранено: {user_text}")
         
-        await update.message.reply_text("Укажите для чего вам необходимо оборудование:")
-        return UNIT
-        
-    except Exception as e:
-        logger.error(f"💥 Ошибка в get_fio: {e}")
-        # В случае ошибки пропускаем проверки и продолжаем
-        self.user_data[user.id]['full_name'] = update.message.text
         await update.message.reply_text("Укажите для чего вам необходимо оборудование:")
         return UNIT
 
@@ -470,44 +427,67 @@ class EquipmentBot:
         return ConversationHandler.END
 
 def main():
-    BOT_TOKEN = os.getenv('BOT_TOKEN')
-    if not BOT_TOKEN:
-        logger.error("❌ BOT_TOKEN не найден!")
-        return
+    MAX_RETRIES = 3
+    retry_count = 0
+    
+    while retry_count < MAX_RETRIES:
+        try:
+            BOT_TOKEN = os.getenv('BOT_TOKEN')
+            if not BOT_TOKEN:
+                logger.error("❌ BOT_TOKEN не найден!")
+                return
 
-    bot = EquipmentBot()
-    application = Application.builder().token(BOT_TOKEN).build()
-    
-    # Обработчики
-    application.add_handler(MessageHandler(filters.Regex("^📝 Новая заявка$"), bot.new_request))
-    
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler('start', bot.start)],
-        states={
-            FIO: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.get_fio)],
-            UNIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.get_unit)],
-            EQUIPMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.get_equipment)],
-            DATES: [
-                MessageHandler(filters.Regex("^(✅ Завершить выбор|🔄 Очистить|✏️ Ввести вручную)$"), bot.get_dates),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, bot.get_dates)
-            ],
-            TIME_SELECTION: [
-                MessageHandler(filters.Regex("^✏️ Свое время$"), bot.handle_time_selection),
-                MessageHandler(filters.Regex("^(🕘 |🕐 |🕔 |🌅 |🌞 |🌙 |📆 )"), bot.handle_time_selection),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_manual_input)
-            ],
-            CONFIRMATION: [
-                MessageHandler(filters.Regex("^(✅ Подтвердить|✏️ Редактировать)$"), bot.handle_confirmation),
-                MessageHandler(filters.Regex("^(👤 ФИО|🎯 Цель|📹 Оборудование|📅 Даты|🔙 Назад)$"), bot.handle_edit_choice)
-            ],
-        },
-        fallbacks=[CommandHandler('cancel', bot.cancel)]
-    )
-    
-    application.add_handler(conv_handler)
-    logger.info("🎉 Бот запущен!")
-    application.run_polling()
+            bot = EquipmentBot()
+            application = Application.builder().token(BOT_TOKEN).build()
+            
+            # Обработчики
+            application.add_handler(MessageHandler(filters.Regex("^📝 Новая заявка$"), bot.new_request))
+            
+            conv_handler = ConversationHandler(
+                entry_points=[CommandHandler('start', bot.start)],
+                states={
+                    FIO: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.get_fio)],
+                    UNIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.get_unit)],
+                    EQUIPMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.get_equipment)],
+                    DATES: [
+                        MessageHandler(filters.Regex("^(✅ Завершить выбор|🔄 Очистить|✏️ Ввести вручную)$"), bot.get_dates),
+                        MessageHandler(filters.TEXT & ~filters.COMMAND, bot.get_dates)
+                    ],
+                    TIME_SELECTION: [
+                        MessageHandler(filters.Regex("^✏️ Свое время$"), bot.handle_time_selection),
+                        MessageHandler(filters.Regex("^(🕘 |🕐 |🕔 |🌅 |🌞 |🌙 |📆 )"), bot.handle_time_selection),
+                        MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_manual_input)
+                    ],
+                    CONFIRMATION: [
+                        MessageHandler(filters.Regex("^(✅ Подтвердить|✏️ Редактировать)$"), bot.handle_confirmation),
+                        MessageHandler(filters.Regex("^(👤 ФИО|🎯 Цель|📹 Оборудование|📅 Даты|🔙 Назад)$"), bot.handle_edit_choice)
+                    ],
+                },
+                fallbacks=[CommandHandler('cancel', bot.cancel)]
+            )
+            
+            application.add_handler(conv_handler)
+            
+            logger.info(f"🎉 Бот запущен (попытка {retry_count + 1}/{MAX_RETRIES})!")
+            application.run_polling(drop_pending_updates=True)
+            break
+            
+        except Exception as e:
+            retry_count += 1
+            wait_time = 10 * retry_count
+            
+            if "Conflict" in str(e):
+                logger.error(f"❌ Конфликт (попытка {retry_count}/{MAX_RETRIES}): {e}")
+            else:
+                logger.error(f"💥 Ошибка (попытка {retry_count}/{MAX_RETRIES}): {e}")
+            
+            if retry_count < MAX_RETRIES:
+                logger.info(f"🔄 Перезапуск через {wait_time} секунд...")
+                import time
+                time.sleep(wait_time)
+            else:
+                logger.error("🚨 Достигнут лимит попыток перезапуска. Бот остановлен.")
+                break
 
 if __name__ == '__main__':
     main()
-
