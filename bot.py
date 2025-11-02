@@ -128,8 +128,60 @@ class EquipmentBot:
         return FIO
 
     async def get_fio(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        """Получение ФИО"""
+    """Получение и проверка ФИО"""
+    try:
         user = update.message.from_user
+        user_text = update.message.text.strip()
+        
+        logger.info(f"🔄 Пользователь {user.id} ввел ФИО: '{user_text}'")
+        
+        # Проверка на пустой ввод
+        if not user_text:
+            await update.message.reply_text("❌ ФИО не может быть пустым. Пожалуйста, введите ваше ФИО:")
+            return FIO
+        
+        # Проверка минимальной длины
+        if len(user_text) < 2:
+            await update.message.reply_text("❌ ФИО слишком короткое. Пожалуйста, введите полное ФИО:")
+            return FIO
+        
+        # Проверка максимальной длины
+        if len(user_text) > 100:
+            await update.message.reply_text("❌ ФИО слишком длинное. Пожалуйста, введите корректное ФИО:")
+            return FIO
+        
+        # Упрощенная проверка на наличие только букв и пробелов (без регулярных выражений)
+        has_invalid_chars = False
+        for char in user_text:
+            if not (char.isalpha() or char.isspace() or char == '-' or char == '.'):
+                has_invalid_chars = True
+                break
+        
+        if has_invalid_chars:
+            await update.message.reply_text(
+                "❌ ФИО может содержать только буквы, пробелы, дефисы и точки. "
+                "Пожалуйста, введите корректное ФИО:"
+            )
+            return FIO
+        
+        # Проверка на количество слов (должно быть минимум 2 слова)
+        words = user_text.split()
+        if len(words) < 2:
+            await update.message.reply_text(
+                "❌ Пожалуйста, введите полное ФИО (Имя и Фамилию):"
+            )
+            return FIO
+        
+        # Если все проверки пройдены - сохраняем
+        self.user_data[user.id]['full_name'] = user_text
+        logger.info(f"✅ ФИО успешно сохранено: {user_text}")
+        
+        await update.message.reply_text("Укажите для чего вам необходимо оборудование:")
+        return UNIT
+        
+    except Exception as e:
+        logger.error(f"💥 Ошибка в get_fio: {e}")
+        # В случае ошибки пропускаем проверки и продолжаем
         self.user_data[user.id]['full_name'] = update.message.text
         await update.message.reply_text("Укажите для чего вам необходимо оборудование:")
         return UNIT
@@ -458,3 +510,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
